@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:chess/components/piece.dart';
 import 'package:chess/components/square.dart';
 import 'package:chess/helper/helper_methods.dart';
@@ -202,10 +204,11 @@ class _GameBoardState extends State<GameBoard> {
 
       // if  a piece is selected  calculate its valid moves
       validMoves =
-          calculateRawValidMove(selectedRow, selectedCol, selectedPiece);
+          calculateRealValidMove(selectedRow, selectedCol, selectedPiece, true);
     });
   }
 
+  // Calculate Raw valid moves
   List<List<int>> calculateRawValidMove(int row, int col, ChessPieces? piece) {
     List<List<int>> candidateMoves = [];
 
@@ -237,12 +240,12 @@ class _GameBoardState extends State<GameBoard> {
         // pawns can kill diagonally
         if (isInBoard(row + direction, col - 1) &&
             board[row + direction][col - 1] != null &&
-            board[row + direction][col - 1]!.isWhite) {
+            board[row + direction][col - 1]!.isWhite != piece.isWhite) {
           candidateMoves.add([row + direction, col - 1]);
         }
         if (isInBoard(row + direction, col + 1) &&
             board[row + direction][col + 1] != null &&
-            board[row + direction][col + 1]!.isWhite) {
+            board[row + direction][col + 1]!.isWhite != piece.isWhite) {
           candidateMoves.add([row + direction, col + 1]);
         }
 
@@ -403,6 +406,29 @@ class _GameBoardState extends State<GameBoard> {
     return candidateMoves;
   }
 
+  // Calculate Real valid moves
+  List<List<int>> calculateRealValidMove(
+      int row, int col, ChessPieces? piece, bool checkSimulation) {
+    List<List<int>> realValidMoves = [];
+    List<List<int>> candidateMoves = calculateRawValidMove(row, col, piece);
+
+    // after generating all candidate moves, filter oout any that would result in a check
+    if (checkSimulation) {
+      for (var move in candidateMoves) {
+        int endRow = move[0];
+        int endCol = move[1];
+
+        // This will simulate the future move to see if its safe
+        if (simulatedMoveInSafe(piece!, row, col, endRow, endCol)) {
+          realValidMoves.add(move);
+        }
+      }
+    } else {
+      realValidMoves = candidateMoves;
+    }
+    return realValidMoves;
+  }
+
   // Move the Piece
   void movePiece(int newRow, int newCol) {
     // if the new spot  has an enemy pieces
@@ -414,6 +440,13 @@ class _GameBoardState extends State<GameBoard> {
       } else {
         blackPiecesTaken.add(capturedPiece);
       }
+    }
+
+    // Check if the piece being moved in a king
+    if (selectedPiece!.isWhite) {
+      whiteKingPosition = [newRow, newCol];
+    } else {
+      blackKingPosition = [newRow, newCol];
     }
 
     //Move The Piece and Clear the old spot
@@ -436,6 +469,21 @@ class _GameBoardState extends State<GameBoard> {
       checkStatus = false;
     }
 
+    // Check if its checkmate
+    if (isCheckMate(isWhiteTurn)) {
+      showDialog(
+        context: context,
+        builder: (context) =>
+            AlertDialog(title: const Text("CheckMate !"), actions: [
+          // Play again Button
+          TextButton(
+            onPressed: resetGame,
+            child: const Text("Play Again"),
+          ),
+        ]),
+      );
+    }
+
     // Change Turns
     isWhiteTurn = !isWhiteTurn;
   }
@@ -453,7 +501,7 @@ class _GameBoardState extends State<GameBoard> {
         }
 
         List<List<int>> pieceValidMoves =
-            calculateRawValidMove(i, j, board[i][j]);
+            calculateRealValidMove(i, j, board[i][j], false);
 
         if (pieceValidMoves.any((move) =>
             move[0] == kingPosition[0] && move[1] == kingPosition[1])) {
@@ -462,6 +510,93 @@ class _GameBoardState extends State<GameBoard> {
       }
     }
     return false;
+  }
+
+  // Simulate a future move to see if its safe (doesnt put your own king under attack)
+  bool simulatedMoveInSafe(
+      ChessPieces piece, int startRow, int startCol, int endRow, int endCol) {
+    // Save the current board state
+    ChessPieces? orginalDestinationPiece = board[endRow][endCol];
+
+    // If the piece is the king, save its current position and update to the new one
+    List<int>? originalKingPosition;
+    if (piece.type == ChessPieceType.king) {
+      originalKingPosition =
+          piece.isWhite ? whiteKingPosition : blackKingPosition;
+
+      // Update  king position
+      if (piece.isWhite) {
+        whiteKingPosition = [endRow, endCol];
+      } else {
+        blackKingPosition = [endRow, endCol];
+      }
+    }
+
+    // Simulate the move
+    board[endRow][endCol] = piece;
+    board[startRow][startCol] = null;
+
+    // Check if our own king under attack
+    bool kingInCheck = isKingInCheck(piece.isWhite);
+
+    // Restore board to orginal state
+    board[startRow][startCol] = piece;
+    board[endRow][endCol] = orginalDestinationPiece;
+
+    // if the piece was the king , restore it orginal position
+    if (piece.type == ChessPieceType.king) {
+      if (piece.isWhite) {
+        whiteKingPosition = originalKingPosition!;
+      } else {
+        blackKingPosition = originalKingPosition!;
+      }
+    }
+
+    // if king is check = true , means its not safe move = false.
+    return !kingInCheck;
+  }
+
+  // Its Check Mate ?
+  bool isCheckMate(bool isWhiteKing) {
+    // if the king is not in check , then its not checkmate
+    if (!isKingInCheck(isWhiteKing)) {
+      return false;
+    }
+
+    // if there is al least one legal move for any of the player's pieces , then its not checkmate
+    for (var i = 0; i < 8; i++) {
+      for (var j = 0; j < 8; i++) {
+        // skip empty squares and pieces of the odher color
+        if (board[i][j] == null || board[i][j]!.isWhite != isWhiteKing) {
+          continue;
+        }
+        List<List<int>> pieceValidMoves =
+            calculateRealValidMove(i, j, board[i][j], true);
+
+        // if this piece has any valid moves, then it's not checkmate
+        if (pieceValidMoves.isNotEmpty) {
+          return false;
+        }
+      }
+    }
+
+    // if none of above conditions are met , then there are no legal moves left to make
+
+    // its checkmate
+    return true;
+  }
+
+  //Reset Game
+  void resetGame() {
+    Navigator.pop(context);
+    _initializeBoard();
+    checkStatus = false;
+    whitePiecesTaken.clear();
+    blackPiecesTaken.clear();
+    whiteKingPosition = [7, 4];
+    blackKingPosition = [0, 4];
+    isWhiteTurn = true;
+    setState(() {});
   }
 
   @override
@@ -485,7 +620,9 @@ class _GameBoardState extends State<GameBoard> {
           ),
 
           // Game Status
-          Text(checkStatus ? "Check!" : ""),
+          Text(checkStatus ? "Check!" : "",
+              style:
+                  const TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
 
           //////////// Chess Board
           Expanded(
